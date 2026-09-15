@@ -1240,3 +1240,13 @@ body {
 .scene-help {
     z-index: 2
 }
+@media (min-width:1051px){
+  .workspace-grid{grid-template-rows:auto auto}
+  .workspace-grid>.rail{grid-column:2;grid-row:1 / span 2}
+  .workspace-grid>.bottom-grid{grid-column:1;grid-row:2;margin-top:0}
+}
+
+@media (max-width:1050px){
+  .workspace-grid>.rail,.workspace-grid>.bottom-grid{grid-column:auto;grid-row:auto}
+  .workspace-grid>.bottom-grid{margin-top:17px}
+}
