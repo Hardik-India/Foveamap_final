@@ -289,7 +289,7 @@ export default function Scene({
           overlay.fill();
 
           if (showObjectLabels) {
-            const name = obj.className || 'obstacle';
+            const name = obj.className || `obstacle #${obj.trackId}`;
             const speed =
               obj.speedMps === null ? '' : ` · ${obj.speedMps.toFixed(1)} m/s`;
             const label = `#${obj.trackId} ${name}${speed}`;

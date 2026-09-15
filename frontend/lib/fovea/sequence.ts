@@ -26,7 +26,31 @@ export type Sequence = {
   timingAssumed: boolean;
 };
 
-export const RELLIS_NAMES:Record<number,string>={0:'void',1:'dirt',3:'grass',4:'tree',5:'pole',6:'water',7:'sky',8:'vehicle',9:'object',10:'asphalt',12:'building',15:'log',17:'person',18:'fence',19:'bush',23:'concrete',27:'barrier',31:'puddle',33:'mud',34:'rubble'};
+export const RELLIS_NAMES: Record<number, string> = {
+  0: 'void',
+  1: 'dirt',
+  3: 'grass',
+  4: 'tree',
+  5: 'pole',
+  6: 'water',
+  7: 'sky',
+  8: 'vehicle',
+  9: 'object',
+  10: 'asphalt',
+  12: 'building',
+  15: 'log',
+  17: 'person',
+  18: 'fence',
+  19: 'bush',
+  23: 'concrete',
+  27: 'barrier',
+  29: 'puddle',
+  30: 'mud',
+  31: 'rubble',
+  32: 'puddle',
+  33: 'rubble',
+  34: 'rubble',
+};
 const MAX_POINTS=250000;
 const numberKey=(name:string)=>{const m=name.match(/(\d+)(?=\.[^.]+$)/);return m?Number(m[1]):Number.MAX_SAFE_INTEGER;};
 const stem=(name:string)=>name.replace(/\.[^.]+$/,'');

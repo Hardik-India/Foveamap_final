@@ -9,10 +9,29 @@ SEMANTIC_MAP = {40:0, 60:0, 44:1, 48:1, 49:1, 72:1, 10:2, 11:2, 13:2, 15:2, 16:2
 # RELLIS-3D uses its own ontology. Keep names separate from SemanticKITTI and
 # from motion state. Unknown IDs are still displayed as named raw labels.
 RELLIS_ONTOLOGY = {
-    0: "void", 1: "dirt", 3: "grass", 4: "tree", 5: "pole", 6: "water",
-    7: "sky", 8: "vehicle", 9: "object", 10: "asphalt", 12: "building",
-    15: "log", 17: "person", 18: "fence", 19: "bush", 23: "concrete",
-    27: "barrier", 31: "puddle", 33: "mud", 34: "rubble",
+    0: "void",
+    1: "dirt",
+    3: "grass",
+    4: "tree",
+    5: "pole",
+    6: "water",
+    7: "sky",
+    8: "vehicle",
+    9: "object",
+    10: "asphalt",
+    12: "building",
+    15: "log",
+    17: "person",
+    18: "fence",
+    19: "bush",
+    23: "concrete",
+    27: "barrier",
+    29: "puddle",
+    30: "mud",
+    31: "rubble",
+    32: "puddle",
+    33: "rubble",
+    34: "rubble",
 }
 _FRAME_RE = re.compile(r"(\d+)(?=\.[^.]+$)")
 

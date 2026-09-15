@@ -2,6 +2,7 @@ from collections import deque
 from dataclasses import dataclass
 import math
 import numpy as np
+from sklearn import cluster
 
 
 @dataclass
@@ -56,7 +57,7 @@ def extract_objects(points, labels=None, semantic_names=None, config=TrackingCon
         if len(labels) == len(p):
             # Ignore terrain-like labels when annotations are present, but do not
             # infer motion from class names.
-            terrain = np.isin(labels, [0, 1, 3, 10, 23, 31, 33])
+            terrain = np.isin(labels, [0, 1, 3, 6, 7, 10, 23, 29, 30, 31, 32, 33, 34])
             candidate_idx = np.flatnonzero(~ground & ~terrain)
     if not len(candidate_idx):
         return []
@@ -83,21 +84,41 @@ def extract_objects(points, labels=None, semantic_names=None, config=TrackingCon
         original = candidate_idx[ids]
         cluster = p[original]
         mn, mx = cluster.min(0), cluster.max(0)
+        dims = mx - mn
+        length = float(max(dims[0], dims[1]))
+        thickness = float(min(dims[0], dims[1]))
+        height = float(dims[2])
+
+        class_name = "unclassified obstacle"
+
+        if 1.2 < height < 2.4 and length < 1.2:
+            class_name = "person heuristic"
+        elif 1.1 < height < 3.2 and 2.0 < length < 7.5:
+            class_name = "vehicle heuristic"
+        elif height > 1.0 and length > 3.0 and thickness < 0.8:
+            class_name = "wall/fence heuristic"
+        elif height > 2.0 and thickness < 1.0:
+            class_name = "pole/tree heuristic"
+        elif height < 1.2 and length > 1.0:
+            class_name = "barrier/object heuristic"
+
         obj = {
             'centroid': cluster.mean(0).tolist(),
             'min': mn.tolist(),
             'max': mx.tolist(),
-            'dimensions': (mx - mn).tolist(),
+            'dimensions': dims.tolist(),
             'points': int(len(cluster)),
             'source': 'geometric-estimate',
             'label': None,
+            'className': class_name,
         }
         if labels is not None and len(labels) == len(p):
             vals, counts = np.unique(labels[original], return_counts=True)
             best = int(vals[np.argmax(counts)])
             obj['label'] = best
             if semantic_names:
-                obj['className'] = semantic_names.get(best, f'rellis-{best}')
+                base_name = semantic_names.get(best, f'rellis-{best}')
+                obj['className'] = f"dynamic {base_name}" if best in {8, 17} else base_name
                 obj['source'] = 'ground-truth-annotation'
         objects.append(obj)
     objects.sort(key=lambda x: (-x['points'], x['centroid'][0], x['centroid'][1]))
