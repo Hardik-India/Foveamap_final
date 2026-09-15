@@ -1,4 +1,8 @@
 import { COLOURS, geometry, type Cell, type Config, type Point } from './engine.ts';
+import {
+  classifyPlannerReadiness,
+  classifyTerrainRisk,
+} from './risk';
 
 export type WebGpuRenderInput = {
   points: Point[];
@@ -121,6 +125,25 @@ function hexToRgb(hex: string) {
   return [r, g, b] as const;
 }
 
+function colourForItem(
+  mode: string,
+  item: { label: number; cell?: ReturnType<typeof classifyTerrainRisk> },
+) {
+  if (mode === 'risk' && item.cell) {
+    return hexToRgb(item.cell.colour);
+  }
+
+  if (mode === 'planner' && item.cell) {
+    return hexToRgb(item.cell.colour);
+  }
+
+  if (mode === 'elevation') {
+    return [0.35, 0.8, 0.75] as const;
+  }
+
+  return hexToRgb(COLOURS[item.label] || '#a6b4c8');
+}
+
 function buildRenderPoints({
   points,
   cells,
@@ -141,7 +164,7 @@ function buildRenderPoints({
             y: point.y,
             z: point.z,
             label,
-            size: label > 1 ? 0.8 : 0.55,
+            size: label > 1 ? 0.9 : 0.65,
           };
         })
       : cells.map((cell) => ({
@@ -149,7 +172,13 @@ function buildRenderPoints({
           y: cell.y,
           z: cell.mean,
           label: cell.label,
-          size: Math.max(0.7, cell.size * 2.2 * zoom),
+          size: Math.max(0.55, Math.min(1.05, cell.size * 1.6 * zoom)),
+          cell:
+            mode === 'risk'
+              ? classifyTerrainRisk(cell)
+              : mode === 'planner'
+                ? classifyPlannerReadiness(cell)
+                : undefined,
         }));
 
   const filtered = data.filter(
@@ -159,10 +188,7 @@ function buildRenderPoints({
 
   filtered.forEach((item, index) => {
     const offset = index * 8;
-    const [r, g, b] =
-      mode === 'elevation'
-        ? [0.35, 0.8, 0.75]
-        : hexToRgb(COLOURS[item.label] || '#a6b4c8');
+    const [r, g, b] = colourForItem(mode, item);
 
     packed[offset + 0] = item.x;
     packed[offset + 1] = item.y;

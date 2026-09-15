@@ -36,6 +36,7 @@ type SceneProps = {
   showObjectLabels?: boolean;
   showTrajectories?: boolean;
   showMotion?: boolean;
+  focusedObjectId?: number | null;
   onSelectObject?: (object: TrackObject | null) => void;
 };
 
@@ -73,6 +74,7 @@ export default function Scene({
   showObjectLabels = true,
   showTrajectories = true,
   showMotion = true,
+  focusedObjectId = null,
   onSelectObject,
 }: SceneProps) {
   const gpuCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -217,11 +219,14 @@ export default function Scene({
       }
 
       if (showMotion) {
-        const visibleObjects = objects.slice(0, showObjectLabels ? 8 : 80);
+        const visibleObjects = objects.slice(0, showObjectLabels ? 12 : 80);
 
         for (const obj of visibleObjects) {
           const colour =
             motionColours[obj.motionStatus] || motionColours.unknown;
+          const isFocused = focusedObjectId === obj.trackId;
+          const isDimmed =
+            focusedObjectId !== null && focusedObjectId !== obj.trackId;
           const min = obj.min;
           const max = obj.max;
           const corners = [
@@ -237,8 +242,8 @@ export default function Scene({
 
           if (showTrajectories && obj.trackHistory.length > 1) {
             overlay.strokeStyle = colour;
-            overlay.globalAlpha = 0.75;
-            overlay.lineWidth = 1.4;
+            overlay.globalAlpha = isDimmed ? 0.16 : isFocused ? 0.95 : 0.75;
+            overlay.lineWidth = isFocused ? 2.5 : 1.4;
             overlay.beginPath();
 
             obj.trackHistory.forEach((point, index) => {
@@ -271,9 +276,13 @@ export default function Scene({
               [3, 7],
             ];
 
+            overlay.globalAlpha = isDimmed ? 0.18 : 1;
+
             for (const [a, b] of edges) {
-              line([corners[a], corners[b]], colour, 1.6);
+              line([corners[a], corners[b]], colour, isFocused ? 2.8 : 1.6);
             }
+
+            overlay.globalAlpha = 1;
           }
 
           const centre = project(
@@ -283,13 +292,24 @@ export default function Scene({
           );
 
           hit.current.push({ x: centre.x, y: centre.y, o: obj });
+          overlay.globalAlpha = isDimmed ? 0.2 : 1;
           overlay.fillStyle = colour;
           overlay.beginPath();
-          overlay.arc(centre.x, centre.y, 4, 0, Math.PI * 2);
+          overlay.arc(centre.x, centre.y, isFocused ? 6 : 4, 0, Math.PI * 2);
           overlay.fill();
+          overlay.globalAlpha = 1;
 
-          if (showObjectLabels) {
-            const name = obj.className || `obstacle #${obj.trackId}`;
+          if (isFocused) {
+            overlay.strokeStyle = '#f7f0a8';
+            overlay.lineWidth = 1.6;
+            overlay.beginPath();
+            overlay.arc(centre.x, centre.y, 15, 0, Math.PI * 2);
+            overlay.stroke();
+          }
+
+          if (showObjectLabels && !isDimmed) {
+            const name =
+              obj.className || `unclassified obstacle #${obj.trackId}`;
             const speed =
               obj.speedMps === null ? '' : ` · ${obj.speedMps.toFixed(1)} m/s`;
             const label = `#${obj.trackId} ${name}${speed}`;
@@ -403,6 +423,7 @@ export default function Scene({
     showObjectLabels,
     showTrajectories,
     showMotion,
+    focusedObjectId,
     webGpuReady,
   ]);
 
@@ -481,7 +502,11 @@ export default function Scene({
           ? 'Raw point cloud'
           : mode === 'elevation'
             ? 'Elevation map'
-            : 'Semantic elevation map'}
+            : mode === 'risk'
+              ? 'Terrain risk map'
+              : mode === 'planner'
+                ? 'Planner readiness map'
+                : 'Semantic elevation map'}
       </div>
 
       <span className="scene-corner">

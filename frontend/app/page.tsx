@@ -1,13 +1,18 @@
 'use client';
 
 /* eslint-disable react-hooks/set-state-in-effect */
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   ArrowDownToLine,
   Box,
   Database,
+  Eye,
+  EyeOff,
   FileText,
+  Filter,
   Focus,
   Gauge,
   Layers3,
@@ -15,6 +20,7 @@ import {
   Pause,
   Play,
   Radar,
+  Route,
   RotateCcw,
   Settings2,
   SkipBack,
@@ -23,39 +29,31 @@ import {
   Upload,
   Waypoints,
 } from 'lucide-react';
-
 import {
-  SidebarProvider,
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuItem,
   SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
   SidebarTrigger,
 } from '@/components/ui/sidebar';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Toaster, toast } from 'sonner';
-
 import {
-  DEFAULT,
   COLOURS,
-  simulate,
-  project,
-  parseCSV,
+  DEFAULT,
   parseBin,
-  type Point,
+  parseCSV,
+  project,
+  simulate,
   type Config,
+  type Point,
 } from '@/lib/fovea/engine';
 import {
   FrameCache,
@@ -67,11 +65,18 @@ import {
 } from '@/lib/fovea/sequence';
 import {
   LocalTracker,
-  extractObjects,
   TRACKING_DEFAULTS,
+  extractObjects,
   type TrackObject,
   type TrackingConfig,
 } from '@/lib/fovea/tracking';
+import {
+  RISK_COLOURS,
+  classifyPlannerReadiness,
+  classifyTerrainRisk,
+  summariseTerrain,
+  type TerrainRiskKey,
+} from '@/lib/fovea/risk.ts';
 import { health, trackFrame } from '@/lib/fovea/api';
 import Scene from './scene';
 
@@ -92,13 +97,7 @@ const scenes: Record<string, string> = {
 const cache = new FrameCache(5);
 const tracker = new LocalTracker();
 
-const basename = (value: string) => value.replace(/^.*[\\/]/, '');
-
-const download = (
-  name: string,
-  data: string,
-  type = 'application/json',
-) => {
+function download(name: string, data: string, type = 'application/json') {
   const url = URL.createObjectURL(new Blob([data], { type }));
   const anchor = document.createElement('a');
 
@@ -107,7 +106,7 @@ const download = (
   anchor.click();
 
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-};
+}
 
 function Picker({
   value,
@@ -125,7 +124,6 @@ function Picker({
       <SelectTrigger className="select-wide" aria-label={label}>
         <SelectValue />
       </SelectTrigger>
-
       <SelectContent>
         {Object.entries(items).map(([key, itemLabel]) => (
           <SelectItem value={key} key={key}>
@@ -137,21 +135,65 @@ function Picker({
   );
 }
 
+function basename(path: string) {
+  return path.replace(/^.*[\\/]/, '');
+}
+
+function bytes(value: number) {
+  if (value > 1024 * 1024) {
+    return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  return `${(value / 1024).toFixed(1)} KB`;
+}
+
+function adaptiveCellEstimate(config: Config) {
+  const bands = [
+    [0, config.near, config.nearSize],
+    [config.near, config.mid, config.midSize],
+    [config.mid, config.far, config.farSize],
+  ];
+
+  return bands.reduce((sum, [start, end, size]) => {
+    let count = 0;
+    const rings = Math.ceil((end - start) / size);
+
+    for (let ring = 0; ring < rings; ring += 1) {
+      const r0 = start + ring * size;
+      const r1 = Math.min(end, r0 + size);
+      const middle = (r0 + r1) / 2;
+
+      count += Math.max(1, Math.ceil((2 * Math.PI * middle) / size));
+    }
+
+    return sum + count;
+  }, 0);
+}
+
+function objectClassName(object: TrackObject) {
+  return object.className || 'unclassified obstacle';
+}
+
+function riskPercent(summary: Record<TerrainRiskKey, number>, key: TerrainRiskKey) {
+  const total = Object.values(summary).reduce((sum, value) => sum + value, 0);
+
+  if (!total) return '0%';
+
+  return `${((summary[key] / total) * 100).toFixed(0)}%`;
+}
+
 export default function Home() {
   const [mounted, setMounted] = useState(false);
-
   const [page, setPage] = useState('workspace');
   const [scene, setScene] = useState('urban');
   const [frame, setFrame] = useState(0);
   const [running, setRunning] = useState(true);
   const [mode, setMode] = useState('semantic');
   const [top, setTop] = useState(false);
-  const [rings] = useState(true);
+  const [rings, setRings] = useState(true);
   const [visible, setVisible] = useState([true, true, true, true]);
   const [config, setConfig] = useState<Config>(DEFAULT);
-  const [source, setSource] = useState<'labels' | 'geometry' | 'neural'>(
-    'neural',
-  );
+  const [source, setSource] = useState<'labels' | 'geometry' | 'neural'>('neural');
 
   const [single, setSingle] = useState<Point[] | null>(null);
   const [fileName, setFileName] = useState('');
@@ -168,16 +210,13 @@ export default function Home() {
   const [history, setHistory] = useState<number[]>([]);
 
   const [objects, setObjects] = useState<TrackObject[]>([]);
-  const [selectedObject, setSelectedObject] = useState<TrackObject | null>(
-    null,
-  );
-  const [backend, setBackend] = useState<'checking' | 'online' | 'offline'>(
-    'checking',
-  );
-  const [backendSession, setBackendSession] = useState<string | undefined>();
-  const [tracking, setTracking] =
-    useState<TrackingConfig>(TRACKING_DEFAULTS);
+  const [selectedObject, setSelectedObject] = useState<TrackObject | null>(null);
+  const [focusedObjectId, setFocusedObjectId] = useState<number | null>(null);
+  const [classFilters, setClassFilters] = useState<Record<string, boolean>>({});
 
+  const [backend, setBackend] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [backendSession, setBackendSession] = useState<string | undefined>();
+  const [tracking, setTracking] = useState<TrackingConfig>(TRACKING_DEFAULTS);
   const [showBoxes, setShowBoxes] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [showTraj, setShowTraj] = useState(true);
@@ -191,7 +230,7 @@ export default function Home() {
   const requestToken = useRef(0);
 
   const sequence = sequences.find((item) => item.id === sequenceId) || null;
-  const sequenceMode = !!sequence;
+  const sequenceMode = Boolean(sequence);
   const maxFrame = sequence ? sequence.frames.length - 1 : single ? 0 : 299;
   const timingAssumed = sequence?.timingAssumed ?? true;
 
@@ -206,9 +245,7 @@ export default function Home() {
   );
 
   const displayPoints = useMemo(() => {
-    if (source !== 'neural') {
-      return points;
-    }
+    if (source !== 'neural') return points;
 
     return points.map((point, index) => ({
       ...point,
@@ -217,44 +254,72 @@ export default function Home() {
   }, [points, result, source]);
 
   const counts = useMemo(
-    () =>
-      COLOURS.map((_, index) =>
-        result.cells.filter((cell) => cell.label === index).length,
-      ),
+    () => COLOURS.map((_, index) => result.cells.filter((cell) => cell.label === index).length),
     [result],
   );
 
-  const currentTitle =
-    nav.find((item) => item[0] === page)?.[1] || 'Perception workspace';
+  const terrainRiskSummary = useMemo(
+    () => summariseTerrain(result.cells, classifyTerrainRisk),
+    [result.cells],
+  );
+
+  const plannerSummary = useMemo(
+    () => summariseTerrain(result.cells, classifyPlannerReadiness),
+    [result.cells],
+  );
+
+  const objectClassOptions = useMemo(() => {
+    return Array.from(new Set(objects.map(objectClassName))).sort((a, b) =>
+      a.localeCompare(b),
+    );
+  }, [objects]);
+
+  const filteredObjects = useMemo(() => {
+    return objects.filter((object) => classFilters[objectClassName(object)] !== false);
+  }, [objects, classFilters]);
+
+  const gridComparison = useMemo(() => {
+    const adaptiveCells = adaptiveCellEstimate(config);
+    const uniformCells = Math.ceil((config.far * 2) / config.nearSize) ** 2;
+    const adaptiveBytes = adaptiveCells * 64;
+    const uniformBytes = uniformCells * 64;
+    const theoreticalSaving = 1 - adaptiveBytes / Math.max(1, uniformBytes);
+    const occupiedSaving = 1 - result.bytes / Math.max(1, result.uniformBytes);
+
+    return {
+      adaptiveCells,
+      uniformCells,
+      adaptiveBytes,
+      uniformBytes,
+      theoreticalSaving,
+      occupiedSaving,
+    };
+  }, [config, result.bytes, result.uniformBytes]);
+
+  const currentTitle = nav.find((item) => item[0] === page)?.[1] || 'Perception workspace';
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   useEffect(() => {
-    const abortController = new AbortController();
+    const controller = new AbortController();
 
-    health(abortController.signal)
+    health(controller.signal)
       .then(() => setBackend('online'))
       .catch(() => setBackend('offline'));
 
-    return () => abortController.abort();
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
-    if (!running || single) {
-      return;
-    }
+    if (!running || single) return;
 
     const delay = Math.max(20, 1000 / (captureHz * speed));
-
     const id = window.setTimeout(() => {
-      setFrame((currentFrame) => {
-        if (currentFrame >= maxFrame) {
-          return loop ? 0 : currentFrame;
-        }
-
-        return currentFrame + 1;
+      setFrame((current) => {
+        if (current >= maxFrame) return loop ? 0 : current;
+        return current + 1;
       });
     }, delay);
 
@@ -267,11 +332,7 @@ export default function Home() {
     const nextFps = 1000 / Math.max(1, now - previous);
 
     lastTick.current = now;
-
-    setRenderFps((current) =>
-      Math.abs(current - nextFps) < 0.25 ? current : nextFps,
-    );
-
+    setRenderFps((current) => (Math.abs(current - nextFps) < 0.25 ? current : nextFps));
     setHistory((current) => {
       const previousLatency = current[current.length - 1];
 
@@ -287,41 +348,35 @@ export default function Home() {
   }, [frame, result.latency]);
 
   useEffect(() => {
-    if (!sequence) {
-      return;
-    }
+    if (!sequence) return;
 
     let stale = false;
     const token = ++requestToken.current;
-    const current = sequence.frames[frame];
+    const currentFrame = sequence.frames[frame];
 
     setBusy(true);
     setError('');
 
     cache
-      .load(current)
+      .load(currentFrame)
       .then((loadedFrame) => {
-        if (stale || token !== requestToken.current) {
-          return;
-        }
+        if (stale || token !== requestToken.current) return;
 
         setLoaded(loadedFrame);
         cache.prefetch(sequence.frames, frame);
         setSource(loadedFrame.semanticLabels ? 'labels' : 'geometry');
       })
-      .catch((caught) => {
+      .catch((loadError) => {
         if (!stale) {
           setError(
-            caught instanceof Error
-              ? caught.message
+            loadError instanceof Error
+              ? loadError.message
               : 'Could not read sequence frame.',
           );
         }
       })
       .finally(() => {
-        if (!stale) {
-          setBusy(false);
-        }
+        if (!stale) setBusy(false);
       });
 
     return () => {
@@ -331,8 +386,7 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
-    const jumped =
-      lastFrame.current >= 0 && frame !== lastFrame.current + 1;
+    const jumped = lastFrame.current >= 0 && frame !== lastFrame.current + 1;
 
     lastFrame.current = frame;
 
@@ -341,9 +395,7 @@ export default function Home() {
       return;
     }
 
-    const timestamp =
-      sequence && loaded ? timestampFor(loaded, captureHz) : frame / captureHz;
-
+    const timestamp = sequence && loaded ? timestampFor(loaded, captureHz) : frame / captureHz;
     const semantic = loaded?.semanticLabels;
     const names = loaded?.semanticNames;
 
@@ -354,7 +406,7 @@ export default function Home() {
     }
 
     if (backend === 'online' && loaded) {
-      const abortController = new AbortController();
+      const controller = new AbortController();
       const token = ++requestToken.current;
 
       trackFrame(loaded, {
@@ -363,32 +415,25 @@ export default function Home() {
         frameIndex: frame,
         jumped,
         config: tracking,
-        signal: abortController.signal,
+        signal: controller.signal,
       })
         .then((response) => {
-          if (cancelled || token !== requestToken.current) {
-            return;
-          }
+          if (cancelled || token !== requestToken.current) return;
 
           setBackendSession(response.sessionId);
           setObjects(response.objects);
         })
         .catch(() => {
-          if (cancelled) {
-            return;
-          }
+          if (cancelled) return;
 
           setBackend('offline');
-
           const detected = extractObjects(points, semantic, names, tracking);
-          setObjects(
-            tracker.update(detected, timestamp, frame, tracking, jumped),
-          );
+          setObjects(tracker.update(detected, timestamp, frame, tracking, jumped));
         });
 
       return () => {
         cancelled = true;
-        abortController.abort();
+        controller.abort();
       };
     }
 
@@ -405,11 +450,40 @@ export default function Home() {
     sequenceMode,
   ]);
 
+  useEffect(() => {
+    if (!objectClassOptions.length) return;
+
+    setClassFilters((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      for (const className of objectClassOptions) {
+        if (next[className] === undefined) {
+          next[className] = true;
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [objectClassOptions]);
+
+  useEffect(() => {
+    if (
+      focusedObjectId !== null &&
+      !filteredObjects.some((object) => object.trackId === focusedObjectId)
+    ) {
+      setFocusedObjectId(null);
+    }
+  }, [focusedObjectId, filteredObjects]);
+
   const resetTracking = () => {
     tracker.reset();
     setBackendSession(undefined);
     lastFrame.current = -1;
     setObjects([]);
+    setSelectedObject(null);
+    setFocusedObjectId(null);
   };
 
   const clearToSynthetic = () => {
@@ -426,9 +500,7 @@ export default function Home() {
   };
 
   const loadSingle = async (file?: File) => {
-    if (!file) {
-      return;
-    }
+    if (!file) return;
 
     setBusy(true);
     setError('');
@@ -438,14 +510,14 @@ export default function Home() {
         throw Error('Choose a scan smaller than 8 MB.');
       }
 
-      const ext = file.name.split('.').pop()?.toLowerCase();
+      const extension = file.name.split('.').pop()?.toLowerCase();
 
-      if (!['csv', 'bin'].includes(ext || '')) {
+      if (!['csv', 'bin'].includes(extension || '')) {
         throw Error('Choose a CSV or KITTI .bin point cloud.');
       }
 
       const parsed =
-        ext === 'bin'
+        extension === 'bin'
           ? parseBin(await file.arrayBuffer())
           : parseCSV(await file.text());
 
@@ -455,32 +527,23 @@ export default function Home() {
       setRunning(false);
       setSource(parsed.every((point) => point.label !== undefined) ? 'labels' : 'geometry');
       setPage('workspace');
-
       toast.success(`Loaded ${parsed.length.toLocaleString()} points`);
-    } catch (caught) {
-      const message =
-        caught instanceof Error ? caught.message : 'Unable to read scan.';
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : 'Unable to read scan.';
 
       setError(message);
       toast.error(message);
     } finally {
       setBusy(false);
-
-      if (input.current) {
-        input.current.value = '';
-      }
+      if (input.current) input.current.value = '';
     }
   };
 
   const loadSelection = (files: FileList | null) => {
-    if (!files?.length) {
-      return;
-    }
+    if (!files?.length) return;
 
     const chosen = [...files];
-    const hasLabels = chosen.some((file) =>
-      file.name.toLowerCase().endsWith('.label'),
-    );
+    const hasLabels = chosen.some((file) => file.name.toLowerCase().endsWith('.label'));
 
     if (chosen.length > 1 || hasLabels) {
       loadFolder(files);
@@ -491,24 +554,18 @@ export default function Home() {
   };
 
   const loadFolder = (files: FileList | null) => {
-    if (!files?.length) {
-      return;
-    }
+    if (!files?.length) return;
 
     try {
       const selected = [...files];
-      const hasBins = selected.some((file) =>
-        file.name.toLowerCase().endsWith('.bin'),
-      );
+      const hasBins = selected.some((file) => file.name.toLowerCase().endsWith('.bin'));
       const hasLabels = selected.some((file) =>
         file.name.toLowerCase().endsWith('.label'),
       );
 
       if (!hasBins && hasLabels) {
         if (!sequences.length) {
-          throw Error(
-            'Load the matching .bin sequence folder before adding a label-only folder.',
-          );
+          throw Error('Load the matching .bin sequence folder before adding a label-only folder.');
         }
 
         const attached = attachLabelsToSequences(sequences, selected);
@@ -524,11 +581,9 @@ export default function Home() {
         setRunning(false);
         setSource('labels');
         setPage('workspace');
-
         toast.success(
           `Attached ${attached.matched.toLocaleString()} label file(s) to the loaded sequence.`,
         );
-
         return;
       }
 
@@ -549,30 +604,20 @@ export default function Home() {
       setRunning(false);
       setSource(hasLabels ? 'labels' : 'geometry');
       setPage('workspace');
-
       toast.success(
         `Loaded ${nextSequences.length} sequence(s), ${nextSequences
           .reduce((total, item) => total + item.frames.length, 0)
           .toLocaleString()} frame(s)`,
       );
-    } catch (caught) {
-      const message =
-        caught instanceof Error ? caught.message : 'Unable to load folder.';
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : 'Unable to load folder.';
 
       setError(message);
       toast.error(message);
     } finally {
-      if (input.current) {
-        input.current.value = '';
-      }
-
-      if (folderInput.current) {
-        folderInput.current.value = '';
-      }
-
-      if (labelFolderInput.current) {
-        labelFolderInput.current.value = '';
-      }
+      if (input.current) input.current.value = '';
+      if (folderInput.current) folderInput.current.value = '';
+      if (labelFolderInput.current) labelFolderInput.current.value = '';
     }
   };
 
@@ -583,6 +628,17 @@ export default function Home() {
     setFrame(0);
     setRunning(false);
     setFileName(sequences.find((item) => item.id === id)?.name || '');
+  };
+
+  const setAllClassFilters = (value: boolean) => {
+    setClassFilters(
+      Object.fromEntries(objectClassOptions.map((className) => [className, value])),
+    );
+  };
+
+  const handleSelectObject = (object: TrackObject | null) => {
+    setSelectedObject(object);
+    setFocusedObjectId(object?.trackId ?? null);
   };
 
   const report = () => {
@@ -597,7 +653,9 @@ export default function Home() {
           timingAssumed,
           backend,
           tracking,
-          objects,
+          terrainRiskSummary,
+          plannerSummary,
+          objects: filteredObjects,
           result: {
             accepted: result.accepted,
             dropped: result.dropped,
@@ -629,9 +687,7 @@ export default function Home() {
   }
 
   return (
-    <SidebarProvider
-      style={{ '--sidebar-width': '223px' } as React.CSSProperties}
-    >
+    <SidebarProvider style={{ '--sidebar-width': '223px' } as React.CSSProperties}>
       <div className="shell flex">
         <Sidebar>
           <SidebarHeader className="p-0">
@@ -646,7 +702,6 @@ export default function Home() {
 
           <SidebarContent className="px-3">
             <div className="side-caption">PERCEPTION PLATFORM</div>
-
             <SidebarMenu>
               {nav.map(([id, label, Icon]) => (
                 <SidebarMenuItem key={id}>
@@ -685,11 +740,9 @@ export default function Home() {
                 <span className="dot" />{' '}
                 {sequenceMode ? 'Sequence' : single ? 'Single scan' : 'Simulation'}
               </span>
-
               <span className={`badge ${backend === 'offline' ? 'offline' : ''}`}>
                 Backend {backend}
               </span>
-
               <div className="avatar">FM</div>
             </div>
           </header>
@@ -714,7 +767,7 @@ export default function Home() {
                 {page === 'workspace' && (
                   <button
                     className="btn primary"
-                    disabled={busy || !!single}
+                    disabled={busy || Boolean(single)}
                     onClick={() => setRunning(!running)}
                   >
                     {running ? <Pause /> : <Play />}
@@ -732,7 +785,6 @@ export default function Home() {
               multiple
               onChange={(event) => loadSelection(event.target.files)}
             />
-
             <input
               ref={folderInput}
               type="file"
@@ -741,7 +793,6 @@ export default function Home() {
               {...{ webkitdirectory: '' }}
               onChange={(event) => loadFolder(event.target.files)}
             />
-
             <input
               ref={labelFolderInput}
               type="file"
@@ -759,9 +810,9 @@ export default function Home() {
 
             {backend === 'offline' && (
               <div className="notice">
-                Backend is offline or unreachable. Basic visualisation and
-                deterministic local tracking remain available; API session
-                isolation and future model inference require the Python backend.
+                Backend is offline or unreachable. Basic visualisation and deterministic
+                local tracking remain available; API session isolation and future model
+                inference require the Python backend.
               </div>
             )}
 
@@ -773,7 +824,7 @@ export default function Home() {
                     <Gauge />
                   </div>
                   <div className="stat-value">
-                    {Number.isFinite(renderFps) ? renderFps.toFixed(1) : '—'}
+                    {Number.isFinite(renderFps) ? renderFps.toFixed(1) : '-'}
                     <small>FPS</small>
                   </div>
                   <div className="stat-note">Canvas/UI rendering only</div>
@@ -807,10 +858,12 @@ export default function Home() {
                     Tracked objects
                     <Box />
                   </div>
-                  <div className="stat-value">{objects.length}</div>
+                  <div className="stat-value">{filteredObjects.length}</div>
                   <div className="stat-note">
                     {tracking.stationarySensor ||
-                    objects.some((item) => item.motionFrame === 'world-compensated')
+                    filteredObjects.some(
+                      (object) => object.motionFrame === 'world-compensated',
+                    )
                       ? 'Speed valid'
                       : 'Relative / uncompensated'}
                   </div>
@@ -827,19 +880,15 @@ export default function Home() {
                         <Box />
                         Live perception
                       </h2>
-
-                      <Tabs
-                        className="mode-tabs"
-                        value={mode}
-                        onValueChange={setMode}
-                      >
+                      <Tabs className="mode-tabs" value={mode} onValueChange={setMode}>
                         <TabsList>
                           <TabsTrigger value="semantic">2.5D grid</TabsTrigger>
                           <TabsTrigger value="points">Point cloud</TabsTrigger>
                           <TabsTrigger value="elevation">Elevation</TabsTrigger>
+                          <TabsTrigger value="risk">Risk</TabsTrigger>
+                          <TabsTrigger value="planner">Planner</TabsTrigger>
                         </TabsList>
                       </Tabs>
-
                       <button
                         className="btn"
                         style={{ padding: '4px 8px', minHeight: 28, fontSize: 12 }}
@@ -859,38 +908,38 @@ export default function Home() {
                       top={top}
                       labels={source !== 'geometry'}
                       rings={rings}
-                      objects={showMotion ? objects : []}
+                      objects={showMotion ? filteredObjects : []}
                       showBoxes={showBoxes}
                       showObjectLabels={showLabels}
                       showTrajectories={showTraj}
                       showMotion={showMotion}
-                      onSelectObject={setSelectedObject}
+                      focusedObjectId={focusedObjectId}
+                      onSelectObject={handleSelectObject}
                     />
 
                     <div className="scene-bottom">
                       <div className="legend">
                         {['Drivable', 'Non-drivable', 'Static obstacle', 'Dynamic object'].map(
-                          (label, index) => (
-                            <span key={label}>
+                          (className, index) => (
+                            <span key={className}>
                               <i style={{ background: COLOURS[index] }} />
-                              {label}
+                              {className}
                             </span>
                           ),
                         )}
                         <span>
-                          <i style={{ background: '#ff8a67' }} />
-                          Moving
+                          <i style={{ background: RISK_COLOURS.caution }} />
+                          Risk caution
                         </span>
                         <span>
-                          <i style={{ background: '#65dbb7' }} />
-                          Stationary
+                          <i style={{ background: RISK_COLOURS.blocked }} />
+                          Blocked
                         </span>
                         <span>
                           <i style={{ background: '#a6b4c8' }} />
                           Unknown
                         </span>
                       </div>
-
                       <span>
                         {loaded?.name || fileName || `${scenes[scene]} frame ${frame}`}
                       </span>
@@ -899,7 +948,7 @@ export default function Home() {
                     <div className="playback">
                       <button
                         aria-label="Previous frame"
-                        disabled={!!single}
+                        disabled={Boolean(single)}
                         onClick={() => {
                           setRunning(false);
                           setFrame((current) => Math.max(0, current - 1));
@@ -910,7 +959,7 @@ export default function Home() {
 
                       <button
                         aria-label={running ? 'Pause playback' : 'Play playback'}
-                        disabled={!!single}
+                        disabled={Boolean(single)}
                         onClick={() => setRunning(!running)}
                       >
                         {running ? <Pause /> : <Play />}
@@ -918,7 +967,7 @@ export default function Home() {
 
                       <button
                         aria-label="Next frame"
-                        disabled={!!single}
+                        disabled={Boolean(single)}
                         onClick={() => {
                           setRunning(false);
                           setFrame((current) => Math.min(maxFrame, current + 1));
@@ -929,7 +978,7 @@ export default function Home() {
 
                       <span className="time">
                         {sequenceMode
-                          ? basename(sequence!.frames[frame]?.name || '')
+                          ? basename(sequence?.frames[frame]?.name || '')
                           : single
                             ? 'SINGLE SCAN'
                             : `${(frame / captureHz).toFixed(1)}s`}
@@ -940,7 +989,7 @@ export default function Home() {
                         max={maxFrame}
                         step={1}
                         value={[frame]}
-                        disabled={!!single}
+                        disabled={Boolean(single)}
                         onValueChange={(value) => {
                           setRunning(false);
                           setFrame(value[0]);
@@ -953,7 +1002,7 @@ export default function Home() {
 
                       <button
                         aria-label="Restart sequence"
-                        disabled={!!single}
+                        disabled={Boolean(single)}
                         onClick={() => {
                           resetTracking();
                           setFrame(0);
@@ -978,7 +1027,6 @@ export default function Home() {
 
                       <div className="panel-body">
                         <div className="field-label">SOURCE</div>
-
                         {sequenceMode ? (
                           <>
                             <Picker
@@ -1040,30 +1088,17 @@ export default function Home() {
                           <Focus />
                           Adaptive resolution
                         </h2>
-                        <button
-                          aria-label="Edit grid settings"
-                          onClick={() => setPage('settings')}
-                        >
+                        <button aria-label="Edit grid settings" onClick={() => setPage('settings')}>
                           <Settings2 size={15} color="#aac1b8" />
                         </button>
                       </div>
 
                       <div className="panel-body" style={{ paddingTop: 5 }}>
                         {[
-                          ['Near field', `0–${config.near} m`, config.nearSize, ''],
-                          [
-                            'Mid field',
-                            `${config.near}–${config.mid} m`,
-                            config.midSize,
-                            'mid',
-                          ],
-                          [
-                            'Far field',
-                            `${config.mid}–${config.far} m`,
-                            config.farSize,
-                            'far',
-                          ],
-                        ].map(([label, range, size, className]) => (
+                          ['Near field', `0-${config.near} m`, config.nearSize, ''],
+                          ['Mid field', `${config.near}-${config.mid} m`, config.midSize, 'mid'],
+                          ['Far field', `${config.mid}-${config.far} m`, config.farSize, 'far'],
+                        ].map(([label, range, sizeValue, className]) => (
                           <div className="resolution" key={label as string}>
                             <div className={`res-icon ${className}`}>
                               <Focus size={17} />
@@ -1073,12 +1108,121 @@ export default function Home() {
                               <span>{range as string}</span>
                             </div>
                             <b>
-                              {Math.round(Number(size) * 100)} <span>cm</span>
+                              {Math.round(Number(sizeValue) * 100)} <span>cm</span>
                             </b>
                           </div>
                         ))}
-
                         <div className="res-note">Exclusive radial cell assignment</div>
+                      </div>
+                    </section>
+
+                    <section className="panel">
+                      <div className="panel-head">
+                        <h2>
+                          <Gauge />
+                          Efficiency proof
+                        </h2>
+                        <small>{Math.round(gridComparison.theoreticalSaving * 100)}% saved</small>
+                      </div>
+
+                      <div className="panel-body">
+                        <div className="memory-row">
+                          <div className="memory-label">
+                            <span>Uniform 5 cm grid</span>
+                            <b>{bytes(gridComparison.uniformBytes)}</b>
+                          </div>
+                          <div className="bar">
+                            <div style={{ width: '100%' }} />
+                          </div>
+                        </div>
+
+                        <div className="memory-row">
+                          <div className="memory-label">
+                            <span>Adaptive radial grid</span>
+                            <b>{bytes(gridComparison.adaptiveBytes)}</b>
+                          </div>
+                          <div className="bar">
+                            <div
+                              style={{
+                                width: `${Math.max(
+                                  4,
+                                  Math.min(
+                                    100,
+                                    (gridComparison.adaptiveBytes /
+                                      gridComparison.uniformBytes) *
+                                      100,
+                                  ),
+                                )}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="memory-foot">
+                          Full-map estimate: {gridComparison.adaptiveCells.toLocaleString()}{' '}
+                          adaptive cells vs {gridComparison.uniformCells.toLocaleString()}{' '}
+                          uniform cells. Current occupied-cell saving:{' '}
+                          {Number.isFinite(gridComparison.occupiedSaving)
+                            ? Math.max(0, gridComparison.occupiedSaving * 100).toFixed(0)
+                            : '0'}
+                          %.
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="panel">
+                      <div className="panel-head">
+                        <h2>
+                          <AlertTriangle />
+                          Terrain risk
+                        </h2>
+                      </div>
+
+                      <div className="panel-body" style={{ paddingTop: 8, paddingBottom: 10 }}>
+                        {(['safe', 'caution', 'blocked', 'dynamic', 'unknown'] as const).map(
+                          (key) => (
+                            <div className="class-row" key={key}>
+                              <i style={{ background: RISK_COLOURS[key] }} />
+                              <span>{key}</span>
+                              <small>{riskPercent(terrainRiskSummary, key)}</small>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="panel">
+                      <div className="panel-head">
+                        <h2>
+                          <Route />
+                          Planner readiness
+                        </h2>
+                      </div>
+
+                      <div className="panel-body prose">
+                        <p>
+                          Uses current grid geometry and optional labels to mark cells as
+                          planner-ready, caution, blocked, dynamic, or unknown. It is not
+                          a path planner yet.
+                        </p>
+                        <div className="class-row">
+                          <span>Ready cells</span>
+                          <small>{riskPercent(plannerSummary, 'safe')}</small>
+                        </div>
+                        <div className="class-row">
+                          <span>Needs caution</span>
+                          <small>{riskPercent(plannerSummary, 'caution')}</small>
+                        </div>
+                        <div className="class-row">
+                          <span>Blocked/dynamic</span>
+                          <small>
+                            {(
+                              Number(riskPercent(plannerSummary, 'blocked').replace('%', '')) +
+                              Number(riskPercent(plannerSummary, 'dynamic').replace('%', ''))
+                            ).toFixed(0)}
+                            %
+                          </small>
+                        </div>
                       </div>
                     </section>
 
@@ -1090,35 +1234,78 @@ export default function Home() {
                         </h2>
                       </div>
 
-                      <div
-                        className="panel-body"
-                        style={{ paddingTop: 8, paddingBottom: 10 }}
-                      >
+                      <div className="panel-body" style={{ paddingTop: 8, paddingBottom: 10 }}>
                         {['Drivable', 'Non-drivable', 'Static obstacles', 'Dynamic objects'].map(
-                          (label, index) => (
-                            <div className="class-row" key={label}>
+                          (name, index) => (
+                            <div className="class-row" key={name}>
                               <i style={{ background: COLOURS[index] }} />
-                              <span>{label}</span>
+                              <span>{name}</span>
                               <small>
-                                {(
-                                  (100 * counts[index]) /
-                                  Math.max(1, result.cells.length)
-                                ).toFixed(0)}
+                                {((100 * counts[index]) / Math.max(1, result.cells.length)).toFixed(
+                                  0,
+                                )}
                                 %
                               </small>
                               <Switch
-                                aria-label={`Show ${label}`}
+                                aria-label={`Show ${name}`}
                                 checked={visible[index]}
-                                onCheckedChange={(checked) =>
+                                onCheckedChange={(value) =>
                                   setVisible((current) =>
-                                    current.map((item, itemIndex) =>
-                                      itemIndex === index ? checked : item,
+                                    current.map((shown, itemIndex) =>
+                                      itemIndex === index ? value : shown,
                                     ),
                                   )
                                 }
                               />
                             </div>
                           ),
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="panel">
+                      <div className="panel-head">
+                        <h2>
+                          <Filter />
+                          Object class filter
+                        </h2>
+                        <div className="mini-actions">
+                          <button onClick={() => setAllClassFilters(true)} aria-label="Show all classes">
+                            <Eye size={14} />
+                          </button>
+                          <button onClick={() => setAllClassFilters(false)} aria-label="Hide all classes">
+                            <EyeOff size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="panel-body">
+                        {objectClassOptions.length ? (
+                          objectClassOptions.map((className) => (
+                            <div className="class-row" key={className}>
+                              <span>{className}</span>
+                              <small>
+                                {
+                                  objects.filter(
+                                    (object) => objectClassName(object) === className,
+                                  ).length
+                                }
+                              </small>
+                              <Switch
+                                checked={classFilters[className] !== false}
+                                onCheckedChange={(value) =>
+                                  setClassFilters((current) => ({
+                                    ...current,
+                                    [className]: value,
+                                  }))
+                                }
+                              />
+                            </div>
+                          ))
+                        ) : (
+                          <p className="source-description">
+                            Load labels or detections to filter object classes.
+                          </p>
                         )}
                       </div>
                     </section>
@@ -1142,7 +1329,7 @@ export default function Home() {
                             <span>{label as string}</span>
                             <Switch
                               checked={value as boolean}
-                              onCheckedChange={setter as (value: boolean) => void}
+                              onCheckedChange={setter as (checked: boolean) => void}
                             />
                           </div>
                         ))}
@@ -1166,16 +1353,14 @@ export default function Home() {
                                 `Unclassified obstacle #${selectedObject.trackId}`}
                             </p>
                             <p>
-                              Motion: {selectedObject.motionStatus} ·{' '}
+                              Motion: {selectedObject.motionStatus} -{' '}
                               {selectedObject.speedMps === null
                                 ? 'speed uncompensated'
                                 : `${selectedObject.speedMps.toFixed(2)} m/s`}
                             </p>
                             <p>
                               Position:{' '}
-                              {selectedObject.centroid
-                                .map((value) => value.toFixed(2))
-                                .join(', ')}{' '}
+                              {selectedObject.centroid.map((value) => value.toFixed(2)).join(', ')}{' '}
                               m
                             </p>
                             <p>
@@ -1187,9 +1372,24 @@ export default function Home() {
                             </p>
                             <p>Source: {selectedObject.source}</p>
                             <p>
-                              Track history: {selectedObject.trackHistory.length}{' '}
-                              samples · {selectedObject.trackingStatus}
+                              Track history: {selectedObject.trackHistory.length} samples -{' '}
+                              {selectedObject.trackingStatus}
                             </p>
+                            <button
+                              className="btn"
+                              onClick={() =>
+                                setFocusedObjectId(
+                                  focusedObjectId === selectedObject.trackId
+                                    ? null
+                                    : selectedObject.trackId,
+                                )
+                              }
+                            >
+                              <Focus />
+                              {focusedObjectId === selectedObject.trackId
+                                ? 'Clear focus'
+                                : 'Focus object'}
+                            </button>
                           </>
                         ) : (
                           <p>
@@ -1208,19 +1408,22 @@ export default function Home() {
                           <Activity />
                           Object tracks
                         </h2>
-                        <small>{objects.length} active</small>
+                        <small>{filteredObjects.length} active</small>
                       </div>
 
                       <div className="panel-body table-scroll">
                         <table className="metric-table">
                           <tbody>
-                            {objects.slice(0, 12).map((object) => (
-                              <tr key={object.trackId}>
+                            {filteredObjects.slice(0, 12).map((object) => (
+                              <tr
+                                key={object.trackId}
+                                onClick={() => {
+                                  setSelectedObject(object);
+                                  setFocusedObjectId(object.trackId);
+                                }}
+                              >
                                 <td>#{object.trackId}</td>
-                                <td>
-                                  {object.className ||
-                                    `Unclassified obstacle #${object.trackId}`}
-                                </td>
+                                <td>{object.className || `Unclassified obstacle #${object.trackId}`}</td>
                                 <td>{object.motionStatus}</td>
                                 <td>
                                   {object.speedMps === null
@@ -1295,24 +1498,22 @@ export default function Home() {
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={(event) => {
                     event.preventDefault();
-
                     const files = [...event.dataTransfer.files];
 
                     if (files.length > 1) {
                       loadFolder(event.dataTransfer.files);
                     } else {
-                      loadSingle(files[0]);
+                      void loadSingle(files[0]);
                     }
                   }}
                 >
                   <Upload />
                   <h2>Load a scan or sequence</h2>
                   <p>
-                    Use a single CSV/KITTI `.bin`, a matching `.bin + .label`
-                    pair, a RELLIS parent folder, or load the `.bin` folder first
-                    and then add the matching `.label` folder.
+                    Use a single CSV/KITTI .bin, a matching .bin + .label pair,
+                    a RELLIS parent folder, or load the .bin folder first and then
+                    add the matching .label folder.
                   </p>
-
                   <div className="actions">
                     <button
                       className="btn primary"
@@ -1321,7 +1522,6 @@ export default function Home() {
                     >
                       Choose single scan
                     </button>
-
                     <button
                       className="btn"
                       disabled={busy}
@@ -1329,7 +1529,6 @@ export default function Home() {
                     >
                       Choose bin or parent folder
                     </button>
-
                     <button
                       className="btn"
                       disabled={busy || !sequences.length}
@@ -1348,10 +1547,9 @@ export default function Home() {
                   <h2>Processing</h2>
                   <p>
                     Grid latency is measured separately from rendered playback FPS.
-                    Current grid has {result.cells.length.toLocaleString()} cells
-                    from {result.accepted.toLocaleString()} accepted points.
+                    Current grid has {result.cells.length.toLocaleString()} cells from{' '}
+                    {result.accepted.toLocaleString()} accepted points.
                   </p>
-
                   <svg viewBox="0 0 500 150" style={{ width: '100%', height: 150 }}>
                     <path
                       d="M0 125H500 M0 65H500 M0 5H500"
@@ -1366,8 +1564,7 @@ export default function Home() {
                         .map(
                           (value, index) =>
                             `${(index / Math.max(1, history.length - 1)) * 490 + 5},${
-                              135 -
-                              (value / Math.max(1, ...history)) * 120
+                              135 - (value / Math.max(1, ...history)) * 120
                             }`,
                         )
                         .join(' ')}
@@ -1390,34 +1587,32 @@ export default function Home() {
               <div className="doc-grid">
                 <section className="panel large-panel prose">
                   <h2>Spatial representation</h2>
-
-                  {[
-                    ['nearSize', 'Near-field cell size', 0.05, 0.15, 0.01],
-                    ['midSize', 'Mid-field cell size', 0.15, 0.5, 0.05],
-                    ['farSize', 'Far-field cell size', 0.5, 1, 0.05],
-                  ].map(([key, label, min, max, step]) => (
-                    <div className="settings-field" key={key as string}>
+                  {(
+                    [
+                      ['nearSize', 'Near-field cell size', 0.05, 0.15, 0.01],
+                      ['midSize', 'Mid-field cell size', 0.15, 0.5, 0.05],
+                      ['farSize', 'Far-field cell size', 0.5, 1, 0.05],
+                    ] as const
+                  ).map(([key, label, min, max, step]) => (
+                    <div className="settings-field" key={key}>
                       <label>
-                        {label as string}
-                        <strong>
-                          {Math.round(config[key as keyof Config] * 100)} cm
-                        </strong>
+                        {label}
+                        <strong>{Math.round(config[key] * 100)} cm</strong>
                       </label>
                       <Slider
-                        value={[config[key as keyof Config]]}
-                        min={min as number}
-                        max={max as number}
-                        step={step as number}
+                        value={[config[key]]}
+                        min={min}
+                        max={max}
+                        step={step}
                         onValueChange={(value) =>
                           setConfig((current) => ({
                             ...current,
-                            [key as string]: value[0],
+                            [key]: value[0],
                           }))
                         }
                       />
                     </div>
                   ))}
-
                   <button className="btn" onClick={() => setConfig(DEFAULT)}>
                     <RotateCcw />
                     Restore defaults
@@ -1426,15 +1621,14 @@ export default function Home() {
 
                 <section className="panel large-panel prose">
                   <h2>Tracking</h2>
-
                   <label className="class-row">
                     Stationary sensor assumption
                     <Switch
                       checked={tracking.stationarySensor}
-                      onCheckedChange={(checked) => {
+                      onCheckedChange={(value) => {
                         setTracking((current) => ({
                           ...current,
-                          stationarySensor: checked,
+                          stationarySensor: value,
                         }));
                         resetTracking();
                       }}
@@ -1484,11 +1678,9 @@ export default function Home() {
                     <Picker
                       label="Semantic input"
                       value={source}
-                      onChange={(value) =>
-                        setSource(value as 'labels' | 'geometry' | 'neural')
-                      }
+                      onChange={(value) => setSource(value as 'labels' | 'geometry' | 'neural')}
                       items={{
-                        neural: 'Neural demo · synthetic only',
+                        neural: 'Neural demo - synthetic only',
                         labels: 'Input labels / annotations',
                         geometry: 'Geometric baseline',
                       }}
@@ -1504,9 +1696,9 @@ export default function Home() {
                   <h2>RELLIS sequence workflow</h2>
                   <p>
                     Select a folder that contains one or more five-digit RELLIS
-                    sequence folders. FoveaMap sorts frame filenames numerically
-                    and does not concatenate different sequences. `.label` files
-                    are optional and must match the exact point count.
+                    sequence folders. FoveaMap sorts frame filenames numerically and
+                    does not concatenate different sequences. .label files are optional
+                    and must match the exact point count.
                   </p>
                   <pre>
                     {
@@ -1518,10 +1710,10 @@ export default function Home() {
                 <section className="panel large-panel prose">
                   <h2>Future model adapter</h2>
                   <p>
-                    Imported predictions must preserve point order and use metres
-                    with feature order x,y,z,intensity. Model predictions require
-                    modelId and checkpointHash metadata. The current bundled MLP is
-                    synthetic-only and is not presented as a trained RELLIS model.
+                    Imported predictions must preserve point order and use metres with
+                    feature order x,y,z,intensity. Model predictions require modelId
+                    and checkpointHash metadata. The current bundled MLP is synthetic-only
+                    and is not presented as a trained RELLIS model.
                   </p>
                   <p>
                     Pose JSON support is documented in the backend README. Without
@@ -1540,7 +1732,7 @@ export default function Home() {
                   : single
                     ? 'Single scan'
                     : 'Synthetic simulation'}{' '}
-                ·{' '}
+                -{' '}
                 {source === 'neural'
                   ? 'Synthetic demo semantics'
                   : source === 'labels'
@@ -1550,7 +1742,6 @@ export default function Home() {
             </footer>
           </div>
         </main>
-
         <Toaster position="bottom-right" theme="dark" richColors />
       </div>
     </SidebarProvider>
