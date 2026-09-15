@@ -1,0 +1,13 @@
+minimumReleaseAge: 10080
+minimumReleaseAgeIgnoreMissingTime: false
+trustLockfile: false
+strictDepBuilds: true
+allowBuilds:
+  esbuild: true
+  fsevents: true
+  sharp: true
+  unrs-resolver: true
+enableGlobalVirtualStore: false
+packageImportMethod: clone-or-copy
+verifyDepsBeforeRun: false
+optimisticRepeatInstall: false

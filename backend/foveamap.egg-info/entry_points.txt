@@ -1,0 +1,3 @@
+[console_scripts]
+foveamap = foveamap.__main__:main
+foveamap-api = foveamap.api:main
