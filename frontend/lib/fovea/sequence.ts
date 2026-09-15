@@ -26,30 +26,30 @@ export type Sequence = {
   timingAssumed: boolean;
 };
 
-export const RELLIS_NAMES: Record<number, string> = {
-  0: 'void',
-  1: 'dirt',
-  3: 'grass',
-  4: 'tree',
-  5: 'pole',
-  6: 'water',
-  7: 'sky',
-  8: 'vehicle',
-  9: 'object',
-  10: 'asphalt',
-  12: 'building',
-  15: 'log',
-  17: 'person',
-  18: 'fence',
-  19: 'bush',
-  23: 'concrete',
-  27: 'barrier',
-  29: 'puddle',
-  30: 'mud',
-  31: 'rubble',
-  32: 'puddle',
-  33: 'rubble',
-  34: 'rubble',
+export const RELLIS_NAMES:Record<number,string>={
+  0:'void',
+  1:'dirt',
+  3:'grass',
+  4:'tree',
+  5:'pole',
+  6:'water',
+  7:'sky',
+  8:'vehicle',
+  9:'object',
+  10:'asphalt',
+  12:'building',
+  15:'log',
+  17:'person',
+  18:'fence',
+  19:'bush',
+  23:'concrete',
+  27:'barrier',
+  29:'puddle',
+  30:'mud',
+  31:'rubble',
+  32:'puddle',
+  33:'rubble',
+  34:'rubble',
 };
 const MAX_POINTS=250000;
 const numberKey=(name:string)=>{const m=name.match(/(\d+)(?=\.[^.]+$)/);return m?Number(m[1]):Number.MAX_SAFE_INTEGER;};
@@ -71,6 +71,27 @@ export function groupSequences(files:File[], hz:number):Sequence[]{
     const frames=ordered.map((file,index)=>({file,name:file.name,stem:stem(file.name),sequenceId:id,index,timestamp:index/hz,timingAssumed:true,labelFile:labels.get(`${id}/${stem(file.name)}`)}));
     return {id,name:id==='upload'?'Uploaded sequence':`RELLIS sequence ${id}`,frames,assumedHz:hz,timingAssumed:true};
   });
+}
+
+export function attachLabelsToSequences(sequences:Sequence[],files:File[]){
+  const labelFiles=files.filter(f=>f.name.toLowerCase().endsWith('.label'));
+  const labelsBySequenceAndStem=new Map<string,File>();
+  const labelsByStem=new Map<string,File>();
+  for(const file of labelFiles){
+    const sid=sequenceIdFor(file),frameStem=stem(file.name);
+    labelsBySequenceAndStem.set(`${sid}/${frameStem}`,file);
+    labelsByStem.set(frameStem,file);
+  }
+  let matched=0;
+  const next=sequences.map(sequence=>{
+    const frames=sequence.frames.map(frame=>{
+      const labelFile=labelsBySequenceAndStem.get(`${frame.sequenceId}/${frame.stem}`)||labelsByStem.get(frame.stem)||frame.labelFile;
+      if(labelFile&&!frame.labelFile)matched++;
+      return {...frame,labelFile};
+    });
+    return {...sequence,frames};
+  });
+  return {sequences:next,matched,total:labelFiles.length};
 }
 
 export function sequenceFromSingle(file:File,hz:number):Sequence{
