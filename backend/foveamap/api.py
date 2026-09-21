@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 import numpy as np
+from .model import infer as model_infer
 
 from .io import load_kitti_bin_bytes, load_rellis_labels, RELLIS_ONTOLOGY
 from .tracking import TrackingConfig, Tracker, extract_objects
@@ -17,6 +18,7 @@ MAX_BODY = 16 * 1024 * 1024
 MAX_POINTS = 250000
 _sessions = {}
 _lock = threading.Lock()
+_checkpoint_path = None
 
 
 def _cors(origin='*'):
@@ -104,7 +106,7 @@ class Handler(BaseHTTPRequestHandler):
                     'tracking': True,
                     'rellisLabels': True,
                     'poses': True,
-                    'trainedModelLoaded': False,
+                    'trainedModelLoaded': _checkpoint_path is not None,
                     'maxPointsPerFrame': MAX_POINTS,
                     'maxBodyBytes': MAX_BODY,
                     'motionModes': ['world-compensated', 'stationary-sensor-assumed', 'sensor-relative-uncompensated'],
@@ -135,6 +137,8 @@ class Handler(BaseHTTPRequestHandler):
             points = _decode_scan(req)
             semantic = None
             names = None
+            semantic_source_override = None
+
             label_payload = req.get('rellisLabelBase64')
             if label_payload:
                 raw = base64.b64decode(label_payload)
@@ -143,6 +147,13 @@ class Handler(BaseHTTPRequestHandler):
                 vals = np.frombuffer(raw, dtype='<u4')
                 semantic = (vals & 0xFFFF).astype(np.int64)
                 names = RELLIS_ONTOLOGY
+            elif _checkpoint_path:
+                from .inference import infer
+                semantic = infer(points)
+                names = None  # or a fixed 4-class name list matching SEMANTIC_MAP
+                semantic_source = 'model-predicted'
+            else:
+                semantic = None
             cfg = TrackingConfig(
                 ground_grid=float(req.get('groundGrid', 1.0)),
                 ground_margin=float(req.get('groundMargin', 0.35)),
@@ -164,7 +175,10 @@ class Handler(BaseHTTPRequestHandler):
                 'timestamp': timestamp,
                 'objects': tracks,
                 'limits': {'maxPointsPerFrame': MAX_POINTS, 'maxDetections': cfg.max_detections},
-                'semanticSource': 'rellis-ground-truth' if semantic is not None else 'geometric-estimate',
+                'semanticSource': (
+                    'rellis-ground-truth' if label_payload
+                    else semantic_source_override or 'geometric-estimate'
+                ),
             })
         except (ValueError, json.JSONDecodeError, binascii.Error) as exc:
             _error(self, 400, str(exc))
@@ -174,7 +188,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='FoveaMap local tracking API')
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8000)
+    parser.add_argument('--checkpoint', default=None)
     args = parser.parse_args(argv)
+    global _checkpoint_path
+    _checkpoint_path = args.checkpoint
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f'FoveaMap API listening on http://{args.host}:{args.port}')
     server.serve_forever()
