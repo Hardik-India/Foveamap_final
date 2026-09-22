@@ -3,14 +3,19 @@ from urllib.parse import urlparse
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import os
 import threading
 import time
 import uuid
 import numpy as np
-from .model import infer as model_infer
+import torch
+from pathlib import Path
 
+from .model import RangeNet, load_model
+from .range_image import range_image
+from .grid import geometry
 from .io import load_kitti_bin_bytes, load_rellis_labels, RELLIS_ONTOLOGY
 from .tracking import TrackingConfig, Tracker, extract_objects
 
@@ -18,8 +23,28 @@ MAX_BODY = 16 * 1024 * 1024
 MAX_POINTS = 250000
 _sessions = {}
 _lock = threading.Lock()
-_checkpoint_path = None
 
+_model = None
+_projection = None
+_checkpoint_path = None
+_checkpoint_hash = None
+MODEL_ID = 'foveamap-range-v1'
+FOUR_CLASS_NAMES = {0: 'drivable', 1: 'non-drivable', 2: 'static-obstacle', 3: 'dynamic-object'}
+
+
+def _load_checkpoint(path, device='cpu'):
+    global _model, _projection, _checkpoint_hash
+    _model, _projection = load_model(path, device)
+    _checkpoint_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+
+
+def _run_model(points, device='cpu'):
+    features, _, row, col, valid = range_image(points, **_projection)
+    with torch.inference_mode():
+        labels = _model(torch.from_numpy(features[None]).to(device)).argmax(1)[0].cpu().numpy()
+    out = geometry(points)
+    out[valid] = labels[row[valid], col[valid]]
+    return out, {'neural_points': int(valid.sum()), 'geometry_fallback_points': int((~valid).sum())}
 
 def _cors(origin='*'):
     return {
@@ -106,7 +131,7 @@ class Handler(BaseHTTPRequestHandler):
                     'tracking': True,
                     'rellisLabels': True,
                     'poses': True,
-                    'trainedModelLoaded': _checkpoint_path is not None,
+                    'trainedModelLoaded': _model is not None,
                     'maxPointsPerFrame': MAX_POINTS,
                     'maxBodyBytes': MAX_BODY,
                     'motionModes': ['world-compensated', 'stationary-sensor-assumed', 'sensor-relative-uncompensated'],
@@ -147,11 +172,10 @@ class Handler(BaseHTTPRequestHandler):
                 vals = np.frombuffer(raw, dtype='<u4')
                 semantic = (vals & 0xFFFF).astype(np.int64)
                 names = RELLIS_ONTOLOGY
-            elif _checkpoint_path:
-                from .inference import infer
-                semantic = infer(points)
-                names = None  # or a fixed 4-class name list matching SEMANTIC_MAP
-                semantic_source = 'model-predicted'
+            elif _model is not None:
+                semantic, inference_meta = _run_model(points)
+                names = FOUR_CLASS_NAMES
+                semantic_source_override = 'model-prediction'
             else:
                 semantic = None
             cfg = TrackingConfig(
@@ -189,13 +213,16 @@ def main(argv=None):
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--checkpoint', default=None)
+    parser.add_argument('--device', default='cpu')
     args = parser.parse_args(argv)
+    if args.checkpoint:
+        _load_checkpoint(args.checkpoint, args.device)
+        print(f'Loaded checkpoint {args.checkpoint} (hash {_checkpoint_hash})')
     global _checkpoint_path
     _checkpoint_path = args.checkpoint
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f'FoveaMap API listening on http://{args.host}:{args.port}')
     server.serve_forever()
-
 
 if __name__ == '__main__':
     main()

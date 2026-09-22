@@ -1,4 +1,3 @@
 backend/.venv/
 backend/foveamap.egg-info/
 backend/foveamap/__pycache__/
-backend/checkpoints/

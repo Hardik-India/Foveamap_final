@@ -216,6 +216,7 @@ export default function Home() {
 
   const [backend, setBackend] = useState<'checking' | 'online' | 'offline'>('checking');
   const [backendSession, setBackendSession] = useState<string | undefined>();
+  const [backendSemanticSource, setBackendSemanticSource] = useState<string | undefined>();
   const [tracking, setTracking] = useState<TrackingConfig>(TRACKING_DEFAULTS);
   const [showBoxes, setShowBoxes] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
@@ -419,8 +420,8 @@ export default function Home() {
       })
         .then((response) => {
           if (cancelled || token !== requestToken.current) return;
-
           setBackendSession(response.sessionId);
+          setBackendSemanticSource(response.semanticSource);
           setObjects(response.objects);
         })
         .catch(() => {
@@ -1073,11 +1074,13 @@ export default function Home() {
                         )}
 
                         <div className="source-description">
-                          {loaded?.semanticSource === 'rellis-ground-truth'
-                            ? 'RELLIS ground-truth semantic labels loaded.'
-                            : source === 'neural'
-                              ? 'Synthetic-trained demo MLP, not a RELLIS model.'
-                              : 'Geometry-only estimates; labels are unclassified obstacles.'}
+                          {backendSemanticSource === 'model-prediction'
+                            ? 'Semantic labels predicted by the trained RELLIS model.'
+                            : loaded?.semanticSource === 'rellis-ground-truth'
+                              ? 'RELLIS ground-truth semantic labels loaded.'
+                              : source === 'neural'
+                                ? 'Synthetic-trained demo MLP, not a RELLIS model.'
+                                : 'Geometry-only estimates; labels are unclassified obstacles.'}
                         </div>
                       </div>
                     </section>
