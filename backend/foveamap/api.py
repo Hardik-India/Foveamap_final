@@ -15,7 +15,6 @@ from pathlib import Path
 
 from .model import RangeNet, load_model
 from .range_image import range_image
-from .grid import geometry
 from .io import load_kitti_bin_bytes, load_rellis_labels, RELLIS_ONTOLOGY
 from .tracking import TrackingConfig, Tracker, extract_objects
 
@@ -26,25 +25,33 @@ _lock = threading.Lock()
 
 _model = None
 _projection = None
+_class_names = None
 _checkpoint_path = None
 _checkpoint_hash = None
+_device = 'cpu'
 MODEL_ID = 'foveamap-range-v1'
-FOUR_CLASS_NAMES = {0: 'drivable', 1: 'non-drivable', 2: 'static-obstacle', 3: 'dynamic-object'}
+
+# Names for the checkpoint's class indices (0..N-1) -> your training CLASS_NAMES list,
+# not the raw RELLIS IDs. Falls back to numbered names if the checkpoint didn't store them.
+def _model_class_names():
+    if _class_names:
+        return {i: name for i, name in enumerate(_class_names)}
+    return None
 
 
 def _load_checkpoint(path, device='cpu'):
-    global _model, _projection, _checkpoint_hash
-    _model, _projection = load_model(path, device)
+    global _model, _projection, _class_names, _checkpoint_hash
+    _model, _projection, _class_names = load_model(path, device)
     _checkpoint_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
 
 
-def _run_model(points, device='cpu'):
+def _run_model(points):
     features, _, row, col, valid = range_image(points, **_projection)
     with torch.inference_mode():
-        labels = _model(torch.from_numpy(features[None]).to(device)).argmax(1)[0].cpu().numpy()
-    out = geometry(points)
+        labels = _model(torch.from_numpy(features[None]).to(_device)).argmax(1)[0].cpu().numpy()
+    out = np.full(len(points), -1, dtype=np.int64)
     out[valid] = labels[row[valid], col[valid]]
-    return out, {'neural_points': int(valid.sum()), 'geometry_fallback_points': int((~valid).sum())}
+    return out, {'neural_points': int(valid.sum()), 'unlabeled_points': int((~valid).sum())}
 
 def _cors(origin='*'):
     return {
@@ -132,6 +139,7 @@ class Handler(BaseHTTPRequestHandler):
                     'rellisLabels': True,
                     'poses': True,
                     'trainedModelLoaded': _model is not None,
+                    'modelClassCount': len(_class_names) if _class_names else None,
                     'maxPointsPerFrame': MAX_POINTS,
                     'maxBodyBytes': MAX_BODY,
                     'motionModes': ['world-compensated', 'stationary-sensor-assumed', 'sensor-relative-uncompensated'],
@@ -163,6 +171,7 @@ class Handler(BaseHTTPRequestHandler):
             semantic = None
             names = None
             semantic_source_override = None
+            inference_meta = None
 
             label_payload = req.get('rellisLabelBase64')
             if label_payload:
@@ -174,10 +183,9 @@ class Handler(BaseHTTPRequestHandler):
                 names = RELLIS_ONTOLOGY
             elif _model is not None:
                 semantic, inference_meta = _run_model(points)
-                names = FOUR_CLASS_NAMES
+                names = _model_class_names()
                 semantic_source_override = 'model-prediction'
-            else:
-                semantic = None
+
             cfg = TrackingConfig(
                 ground_grid=float(req.get('groundGrid', 1.0)),
                 ground_margin=float(req.get('groundMargin', 0.35)),
@@ -193,7 +201,7 @@ class Handler(BaseHTTPRequestHandler):
             objects = extract_objects(points, semantic, names, cfg)
             timestamp = float(req.get('timestamp', 0.0))
             tracks = tracker.update(objects, timestamp, req.get('frameIndex'), _pose(req), bool(req.get('jumped')))
-            _json(self, 200, {
+            response = {
                 'sessionId': sid,
                 'frameIndex': req.get('frameIndex'),
                 'timestamp': timestamp,
@@ -203,9 +211,16 @@ class Handler(BaseHTTPRequestHandler):
                     'rellis-ground-truth' if label_payload
                     else semantic_source_override or 'geometric-estimate'
                 ),
-            })
+            }
+            if semantic_source_override == 'model-prediction':
+                response['modelId'] = MODEL_ID
+                response['checkpointHash'] = _checkpoint_hash
+                response['inferenceMeta'] = inference_meta
+            _json(self, 200, response)
         except (ValueError, json.JSONDecodeError, binascii.Error) as exc:
             _error(self, 400, str(exc))
+        except Exception as exc:
+            _error(self, 500, str(exc), 'internal_error')
 
 
 def main(argv=None):
@@ -215,10 +230,11 @@ def main(argv=None):
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--device', default='cpu')
     args = parser.parse_args(argv)
+    global _checkpoint_path, _device
+    _device = args.device
     if args.checkpoint:
         _load_checkpoint(args.checkpoint, args.device)
-        print(f'Loaded checkpoint {args.checkpoint} (hash {_checkpoint_hash})')
-    global _checkpoint_path
+        print(f'Loaded checkpoint {args.checkpoint} (hash {_checkpoint_hash}, {len(_class_names)} classes)')
     _checkpoint_path = args.checkpoint
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f'FoveaMap API listening on http://{args.host}:{args.port}')
