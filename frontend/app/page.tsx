@@ -26,7 +26,6 @@ import {
   SkipBack,
   SkipForward,
   SlidersHorizontal,
-  Upload,
   Waypoints,
 } from 'lucide-react';
 import {
@@ -83,7 +82,6 @@ import Scene from './scene';
 const nav = [
   ['workspace', 'Perception workspace', Map],
   ['metrics', 'Performance metrics', Gauge],
-  ['data', 'Point cloud library', Database],
   ['guide', 'Project guide', FileText],
   ['settings', 'Pipeline settings', SlidersHorizontal],
 ] as const;
@@ -1082,6 +1080,52 @@ export default function Home() {
                                 ? 'Synthetic-trained demo MLP, not a RELLIS model.'
                                 : 'Geometry-only estimates; labels are unclassified obstacles.'}
                         </div>
+
+                        <div
+                          className="dropzone dropzone-compact"
+                          onDragOver={(event) => event.preventDefault()}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            const files = [...event.dataTransfer.files];
+
+                            if (files.length > 1) {
+                              loadFolder(event.dataTransfer.files);
+                            } else {
+                              void loadSingle(files[0]);
+                            }
+                          }}
+                        >
+                          <div className="field-label">LOAD NEW SCAN</div>
+                          <p className="source-description">
+                            Use a single CSV/KITTI .bin, a matching .bin +
+                            .label pair, a RELLIS parent folder, or load the
+                            .bin folder first and then add the matching
+                            .label folder.
+                          </p>
+                          <div className="actions">
+                            <button
+                              className="btn primary"
+                              disabled={busy}
+                              onClick={() => input.current?.click()}
+                            >
+                              Choose single scan
+                            </button>
+                            <button
+                              className="btn"
+                              disabled={busy}
+                              onClick={() => folderInput.current?.click()}
+                            >
+                              Choose bin or parent folder
+                            </button>
+                            <button
+                              className="btn"
+                              disabled={busy || !sequences.length}
+                              onClick={() => labelFolderInput.current?.click()}
+                            >
+                              Add label folder
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </section>
 
@@ -1492,56 +1536,6 @@ export default function Home() {
                   </div>
                 </div>
               </>
-            )}
-
-            {page === 'data' && (
-              <section className="panel large-panel">
-                <div
-                  className="dropzone"
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const files = [...event.dataTransfer.files];
-
-                    if (files.length > 1) {
-                      loadFolder(event.dataTransfer.files);
-                    } else {
-                      void loadSingle(files[0]);
-                    }
-                  }}
-                >
-                  <Upload />
-                  <h2>Load a scan or sequence</h2>
-                  <p>
-                    Use a single CSV/KITTI .bin, a matching .bin + .label pair,
-                    a RELLIS parent folder, or load the .bin folder first and then
-                    add the matching .label folder.
-                  </p>
-                  <div className="actions">
-                    <button
-                      className="btn primary"
-                      disabled={busy}
-                      onClick={() => input.current?.click()}
-                    >
-                      Choose single scan
-                    </button>
-                    <button
-                      className="btn"
-                      disabled={busy}
-                      onClick={() => folderInput.current?.click()}
-                    >
-                      Choose bin or parent folder
-                    </button>
-                    <button
-                      className="btn"
-                      disabled={busy || !sequences.length}
-                      onClick={() => labelFolderInput.current?.click()}
-                    >
-                      Add label folder
-                    </button>
-                  </div>
-                </div>
-              </section>
             )}
 
             {page === 'metrics' && (
