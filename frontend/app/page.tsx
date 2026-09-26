@@ -1163,6 +1163,7 @@ export default function Home() {
                       </div>
                     </section>
 
+                    <div className="rail-row">
                     <section className="panel">
                       <div className="panel-head">
                         <h2>
@@ -1237,6 +1238,7 @@ export default function Home() {
                         )}
                       </div>
                     </section>
+                    </div>
 
                     <section className="panel">
                       <div className="panel-head">
@@ -1357,6 +1359,7 @@ export default function Home() {
                       </div>
                     </section>
 
+                    <div className="rail-row">
                     <section className="panel">
                       <div className="panel-head">
                         <h2>
@@ -1446,6 +1449,7 @@ export default function Home() {
                         )}
                       </div>
                     </section>
+                    </div>
                   </aside>
 
                   <div className="bottom-grid">
